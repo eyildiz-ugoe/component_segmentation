@@ -27,7 +27,7 @@ This implementation uses **MobileNetV1-RCNN** (MobV1-RCNN), which was selected a
 
 The model detects and segments 12 different hard drive component types with high accuracy, making it suitable for automated recycling and disassembly workflows.
 
-## � Authors
+## Authors
 
 **Erenus Yildiz** (Lead Author, Implementation)  
 Email: erenus.yildiz@hotmail.com
