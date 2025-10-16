@@ -25,8 +25,13 @@ import tensorflow as tf
 import keras
 import keras.backend as K
 import keras.layers as KL
-import keras.engine as KE
 import keras.models as KM
+# Compatibility: keras.engine.Layer moved to keras.layers.Layer in newer versions
+try:
+    from keras.engine import Layer as KerasLayer
+except (ImportError, AttributeError):
+    from keras.layers import Layer as KerasLayer
+KE = type('KE', (), {'Layer': KerasLayer})()
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../")
@@ -45,7 +50,10 @@ import keras.initializers as KI
 import keras.regularizers as KR
 import keras.constraints as KC
 from keras.utils import conv_utils
-from keras.engine import InputSpec
+try:
+    from keras.engine import InputSpec
+except ImportError:
+    from keras.layers import InputSpec
 
 
 ############################################################
@@ -641,7 +649,9 @@ class ProposalLayer(KE.Layer):
 
 def log2_graph(x):
     """Implementatin of Log2. TF doesn't have a native implemenation."""
-    return tf.log(x) / tf.log(2.0)
+    # Use tf.math.log for TF 2.x compatibility
+    log_fn = getattr(tf.math, 'log', None) or tf.log
+    return log_fn(x) / log_fn(2.0)
 
 
 class PyramidROIAlign(KE.Layer):
@@ -989,7 +999,8 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     # Class IDs per ROI
     class_ids = tf.argmax(probs, axis=1, output_type=tf.int32)
     # Class probability of the top class of each ROI
-    indices = tf.stack([tf.range(probs.shape[0]), class_ids], axis=1)
+    # Use tf.shape for dynamic dimensions in TF 2.x
+    indices = tf.stack([tf.range(tf.shape(probs)[0]), class_ids], axis=1)
     class_scores = tf.gather_nd(probs, indices)
     # Class-specific bounding box deltas
     deltas_specific = tf.gather_nd(deltas, indices)
@@ -1007,9 +1018,13 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     # Filter out low confidence boxes
     if config.DETECTION_MIN_CONFIDENCE:
         conf_keep = tf.where(class_scores >= config.DETECTION_MIN_CONFIDENCE)[:, 0]
-        keep = tf.sets.set_intersection(tf.expand_dims(keep, 0),
+        # Use tf.sets.intersection for TF 2.x
+        set_intersection_fn = getattr(tf.sets, 'intersection', None) or getattr(tf.sets, 'set_intersection')
+        keep = set_intersection_fn(tf.expand_dims(keep, 0),
                                         tf.expand_dims(conf_keep, 0))
-        keep = tf.sparse_tensor_to_dense(keep)[0]
+        # Use sparse.to_dense for TF 2.x
+        to_dense_fn = getattr(tf.sparse, 'to_dense', None) or tf.sparse_tensor_to_dense
+        keep = to_dense_fn(keep)[0]
 
     # Apply per-class NMS
     # 1. Prepare variables
@@ -1045,9 +1060,13 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     nms_keep = tf.reshape(nms_keep, [-1])
     nms_keep = tf.gather(nms_keep, tf.where(nms_keep > -1)[:, 0])
     # 4. Compute intersection between keep and nms_keep
-    keep = tf.sets.set_intersection(tf.expand_dims(keep, 0),
+    # Use tf.sets.intersection for TF 2.x
+    set_intersection_fn = getattr(tf.sets, 'intersection', None) or getattr(tf.sets, 'set_intersection')
+    keep = set_intersection_fn(tf.expand_dims(keep, 0),
                                     tf.expand_dims(nms_keep, 0))
-    keep = tf.sparse_tensor_to_dense(keep)[0]
+    # Use sparse.to_dense for TF 2.x
+    to_dense_fn = getattr(tf.sparse, 'to_dense', None) or tf.sparse_tensor_to_dense
+    keep = to_dense_fn(keep)[0]
     # Keep top detections
     roi_count = config.DETECTION_MAX_INSTANCES
     class_scores_keep = tf.gather(class_scores, keep)
@@ -1059,7 +1078,7 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     # Coordinates are normalized.
     detections = tf.concat([
         tf.gather(refined_rois, keep),
-        tf.to_float(tf.gather(class_ids, keep))[..., tf.newaxis],
+        tf.cast(tf.gather(class_ids, keep), tf.float32)[..., tf.newaxis],
         tf.gather(class_scores, keep)[..., tf.newaxis]
         ], axis=1)
 
@@ -1229,7 +1248,8 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
                            name='mrcnn_bbox_fc')(shared)
     # Reshape to [batch, boxes, num_classes, (dy, dx, log(dh), log(dw))]
     s = K.int_shape(x)
-    mrcnn_bbox = KL.Reshape((s[1], num_classes, 4), name="mrcnn_bbox")(x)
+    # Use -1 for dynamic dimensions in TF 2.x
+    mrcnn_bbox = KL.Reshape((-1, num_classes, 4), name="mrcnn_bbox")(x)
 
     return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
 
@@ -2409,10 +2429,28 @@ class MaskRCNN():
         if exclude:
             layers = filter(lambda l: l.name not in exclude, layers)
 
+        # Use the appropriate method for loading weights based on Keras version
         if by_name:
-            saving.load_weights_from_hdf5_group_by_name(f, layers)
+            try:
+                # Try newer Keras API first
+                from keras.saving import legacy
+                legacy.load_weights_from_hdf5_group_by_name(f, layers)
+            except (ImportError, AttributeError):
+                try:
+                    # Fall back to older API
+                    saving.load_weights_from_hdf5_group_by_name(f, layers)
+                except AttributeError:
+                    # Last resort: use model's load_weights method
+                    if hasattr(f, 'close'):
+                        f.close()
+                    keras_model.load_weights(filepath, by_name=True, skip_mismatch=True)
+                    return
         else:
-            saving.load_weights_from_hdf5_group(f, layers)
+            try:
+                from keras.saving import legacy
+                legacy.load_weights_from_hdf5_group(f, layers)
+            except (ImportError, AttributeError):
+                saving.load_weights_from_hdf5_group(f, layers)
         if hasattr(f, 'close'):
             f.close()
 

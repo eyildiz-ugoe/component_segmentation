@@ -15,10 +15,8 @@ except ImportError:  # pragma: no cover - exercised by the test suite
 if np is not None and getattr(np, "IS_FAKE", False):  # pragma: no cover - test shim
     np = None  # type: ignore
 
-try:  # pragma: no cover - optional dependency in the execution environment
-    from skimage import io as skio  # type: ignore
-except ImportError:  # pragma: no cover - exercised by the test suite
-    skio = None  # type: ignore
+# Lazy import for skimage to avoid numpy binary compatibility issues during test imports
+skio = None  # Will be imported on first use if available
 
 from mrcnn.config import Config
 
@@ -58,6 +56,19 @@ class ComponentInferenceConfig(ComponentConfig):
 
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1
+
+
+def _get_skio():
+    """Lazy load skimage.io to avoid import-time numpy compatibility issues."""
+    global skio
+    if skio is None:
+        try:
+            from skimage import io as skio_module
+            skio = skio_module
+        except (ImportError, AttributeError):
+            # AttributeError can occur due to numpy binary compatibility issues
+            skio = False  # Mark as attempted but failed
+    return skio if skio is not False else None
 
 
 @dataclass
@@ -245,9 +256,10 @@ class ComponentSegmenter:
     def segment_image_path(self, image_path: str) -> Tuple[DetectionResult, Any]:
         if not os.path.exists(image_path):
             raise FileNotFoundError(image_path)
-        if skio is None:
+        skio_module = _get_skio()
+        if skio_module is None:
             raise RuntimeError("scikit-image is required to load images from disk")
-        image = skio.imread(image_path)
+        image = skio_module.imread(image_path)
         return self.segment(image)
 
 
@@ -265,10 +277,11 @@ def save_mask(mask: Any, output_path: str) -> None:
                 pickle.dump(mask, file)
         return
 
-    if skio is None or np is None:
+    skio_module = _get_skio()
+    if skio_module is None or np is None:
         raise RuntimeError("Saving masks as images requires numpy and scikit-image to be installed")
 
-    skio.imsave(output_path, np.array(mask, dtype=np.uint8))
+    skio_module.imsave(output_path, np.array(mask, dtype=np.uint8))
 
 
 def parse_args(args: Optional[Iterable[str]] = None) -> argparse.Namespace:
